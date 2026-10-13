@@ -1,0 +1,79 @@
+# 可选覆盖层：国内容器部署 + 子路径反向代理 + 容器内可见浏览器
+#
+# 这份文件是**示例**，不是默认配置。它记录了我们这套部署踩过的具体坑，
+# 你按自己的环境改完再叠上去：
+#
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.override.example.yml up -d
+#
+# 什么时候需要它：
+#   - 服务器在国内，被墙的中转站直连不通 → 需要「出口代理」那几行
+#   - 想挂在域名子路径下（https://example.com/checkin/）→ 需要 CHECKIN_BASE
+#   - 想让「浏览器登录」有个能看的界面 → 需要 VNC 那几行
+#
+# 不需要的话就别用这份文件，默认的 docker-compose.yml 就够了。
+
+services:
+  panel:
+    build:
+      args:
+        # 挂子路径。挂在根路径就删掉这行。
+        CHECKIN_BASE: /checkin/
+
+    ports:
+      # 面板端口：只绑回环，外网入口交给反向代理（带鉴权的那层）。
+      # 换成你那边没被占用的端口即可。
+      - "127.0.0.1:18000:8000"
+      # noVNC 网页桥：浏览器登录时用来看/操作那个可见浏览器。
+      # 只绑回环 —— 6080 能直接控制一个已登录的浏览器，等于半把账号钥匙。
+      # 不用时把这行连同 CHECKIN_VNC 一起删掉。
+      - "127.0.0.1:18001:6080"
+
+    environment:
+      # ── 出口代理 ──
+      # 填宿主上代理的地址（下面按「宿主跑 Clash/mihomo，mixed 端口 7890」举例）。
+      # 容器内的 127.0.0.1 是容器自己，所以要用宿主的 Docker 网桥地址：
+      #   Linux 默认是 172.17.0.1（docker0），或用 host.docker.internal 别名。
+      # 注意：如果你的宿主装了主机防火墙并限制了这个方向的访问，容器仍可能
+      # 连不上 —— 那就需要放行「Docker 网段 → 宿主代理端口」，或者给容器指定
+      # 一个已放行的网段。我们那边就属于这种情况，所以下面还固定了子网。
+      CHECKIN_PROXY_URL: http://172.17.0.1:7890
+      CHECKIN_HTTP_PROXY: http://172.17.0.1:7890
+      CHECKIN_BROWSER_PROXY: "1"
+
+      # ── 容器内虚拟显示器 + noVNC ──
+      CHECKIN_VNC: "1"
+
+      # ── 图形验证码识别 ──
+      # 指向任意 OpenAI 兼容的视觉接口。本机用的是自建的网关（模型 auto）。
+      # 不配也行，只是需要图形验证码的站点签不了。
+      CHECKIN_VISION_BASE_URL: https://<你的视觉接口>/v1
+      CHECKIN_VISION_MODEL: auto
+      CHECKIN_VISION_API_KEY: ${CHECKIN_VISION_API_KEY:-}
+
+      # ── 推荐卡片 ──
+      # 它拉 raw.githubusercontent.com；国内不通的话关掉，省一次无谓的超时等待。
+      PANEL_PROMO: "0"
+
+      # ── 浏览器内核下载也走代理 ──
+      # cloakbrowser 下载用 httpx 默认的 trust_env=True，读这两个变量；面板自己的
+      # HTTP 客户端都显式 trust_env=False，所以这里只影响浏览器二进制下载。
+      # 不设的后果（实测）：国内直连下载地址超时 → 下载卡住 → 同步调用阻塞事件循环
+      # → 面板整体不响应（health 和首页全挂）→ 反向代理报 504。
+      HTTP_PROXY: http://172.17.0.1:7890
+      HTTPS_PROXY: http://172.17.0.1:7890
+      NO_PROXY: localhost,127.0.0.1,172.17.0.1
+
+    # 给上面那个网关地址一个别名，方便改用 host.docker.internal 写法时也通。
+    extra_hosts:
+      - "host.docker.internal:172.17.0.1"
+
+    networks:
+      - checkin
+
+networks:
+  # 固定子网只是为了让「宿主防火墙按网段放行代理端口」这件事可控。
+  # 如果你那边代理直接可达（没装这类主机防火墙），整段删掉用默认网络即可。
+  checkin:
+    ipam:
+      config:
+        - subnet: 172.19.0.0/16

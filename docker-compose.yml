@@ -1,0 +1,88 @@
+# 中转站自动签到面板 —— 通用配置（开箱即用）
+#
+#   docker compose up -d --build && docker compose logs -f
+#
+# 打开 http://127.0.0.1:8000 即可加账号、签到。
+#
+# 这份文件**不含任何环境特定配置**：没有代理、没有外部识别服务、监听回环地址。
+# 国内 / 被墙环境请再叠一层覆盖文件（见下方「可选覆盖层」）。
+#
+# 可选覆盖层：
+#   本仓库的 deploy/docker-compose.override.example.yml 是一份「国内服务器 +
+#   子路径反向代理 + 容器内虚拟显示器」的参考配置。用它的时候：
+#     docker compose -f docker-compose.yml -f deploy/docker-compose.override.example.yml up -d
+
+services:
+  panel:
+    build:
+      context: .
+      args:
+        # 挂在域名子路径下时（如 https://example.com/checkin/）改成 /checkin/，
+        # 前端产物资源前缀与 api.ts 的 BASE_URL 都由它决定。挂在根路径就删掉这行。
+        CHECKIN_BASE: ${CHECKIN_BASE:-/}
+    image: checkin-panel
+    container_name: checkin-panel
+
+    # 只绑回环地址。
+    #
+    # 面板**没有登录功能**，`GET /api/accounts` 会明文返回每个账号的密码和 session
+    # （上游 ADR-0003 的设计取舍：单用户、跑在自己机器上）。所以：
+    #   自己电脑上用   → 就这样，别改。浏览器打开 http://127.0.0.1:8000
+    #   想从手机访问   → 用 Tailscale / WireGuard 之类的私有网络
+    #   必须放公网     → 认证 + TLS + 面板端口不对外，三者缺一不可
+    #                    做法见 docs/deploying.md
+    # 直接把这里的 127.0.0.1 换成 0.0.0.0 会把所有账号凭据交给网络上任何人。
+    ports:
+      - "127.0.0.1:${PANEL_PORT:-8000}:8000"
+
+    environment:
+      # 站点按本地时间开当天奖励（checkin_after），时区必须对。
+      TZ: ${TZ:-Asia/Shanghai}
+
+      # 每日自动签到循环（窗口到了自动签，失败退避重试）。设 "0" 只保留手动。
+      PANEL_SCHEDULER: "1"
+
+      # 推荐卡片：会去拉 raw.githubusercontent.com。国内不通的话设 "0"。
+      PANEL_PROMO: ${PANEL_PROMO:-1}
+
+      # ── 出口代理（可选，默认关）──
+      # 站点直连得通就都不用设。国内 / 被墙环境设为宿主上的 HTTP 代理，例如
+      # CHECKIN_PROXY_URL=http://192.168.1.10:7890
+      # 三个变量分工：
+      #   CHECKIN_PROXY_URL    浏览器登录（Turnstile / OAuth）走这个出口
+      #   CHECKIN_HTTP_PROXY   HTTP 签到也走同一个出口（本分支加的补丁）
+      #   CHECKIN_BROWSER_PROXY=1  让所有浏览器上下文都走代理（上游默认只给 Turnstile 开）
+      # CHECKIN_PROXY_URL: http://<宿主代理地址>:7890
+      # CHECKIN_HTTP_PROXY: http://<宿主代理地址>:7890
+      # CHECKIN_BROWSER_PROXY: "1"
+
+      # ── 图形验证码识别（可选，默认关）──
+      # 有些站把签到和一张图形验证码绑在一起。不配这三项也不会崩：面板会明确
+      # 提示「该站需要图形验证码，但未配置识别模型」，只是那些站签不了。
+      # 指向任意 OpenAI 兼容的视觉接口即可（自建网关 / 官方 API 都行）。
+      # CHECKIN_VISION_BASE_URL: https://<你的视觉接口>/v1
+      # CHECKIN_VISION_MODEL: auto
+      # CHECKIN_VISION_API_KEY: ${CHECKIN_VISION_API_KEY:-}   # 建议放 .env，别写在这
+
+      # ── 容器内虚拟显示器 + noVNC（可选，默认关）──
+      # 设 "1" 后容器内起 Xvfb + x11vnc + noVNC：面板的「浏览器登录」会开一个**有界面**
+      # 的浏览器（要人手动点 GitHub / LinuxDO 授权），没有虚拟显示器时它会崩
+      # （TargetClosedError: Missing X server）。
+      # 注意：**只有「浏览器登录」需要它**；纯 HTTP 签到和 Sub2API 的自动登录都能
+      # 在无显示器下跑（后者用 headless=False 但依赖 Xvfb，见代码注释）。
+      # 用法见 deploy/entrypoint.sh。
+      CHECKIN_VNC: ${CHECKIN_VNC:-0}
+
+    volumes:
+      # 账号库（唯一副本，明文）。备份时和下面两个一起拷。
+      - ./data:/app/data
+      # 已登录的浏览器会话 profile（OAuth 站点靠它续命）。
+      - ./browser_profiles:/app/.browser_profiles
+      # ~500MB 隐身 Chromium 缓存，独立卷避免重建重下。
+      - ./browser_cache:/app/.local/cloakbrowser
+
+    restart: unless-stopped
+
+    # Chromium 会大量使用 /dev/shm，而 Docker 默认只给 64MB —— 加载较重的 SPA 时
+    # 渲染进程会耗尽它然后崩溃，面板报 `Locator.count: Target crashed`（实测踩过）。
+    shm_size: 512m
