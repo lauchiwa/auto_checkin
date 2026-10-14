@@ -73,16 +73,22 @@ function statusChip(acc: Account): ChipState {
   if (acc.last_success == null) return { text: acc.enabled ? '未运行' : '已停用', color: 'default', hint: null }
   const state: ChipState = !acc.last_success
     ? { text: '失败', color: 'danger', hint: null }
-    : acc.last_checked_in === true
-      ? { text: '签到成功', color: 'success', hint: null }
-      : acc.last_checked_in === false
-        ? { text: '今日已签', color: 'primary', hint: null }
-        : // null is nobody's word: rendering it as 今日已签 showed no evidence as evidence.
-          {
-            text: '已登录·未确认',
-            color: 'warning',
-            hint: '本次没能确认今天的签到是否落地：站点没给回执，余额也没动过。',
-          }
+    : !ranToday(acc.last_run_at)
+      ? {
+          text: '待签到',
+          color: 'warning',
+          hint: '上次签到不是今天的结果，今天还需要签到。',
+        }
+      : acc.last_checked_in === true
+        ? { text: '签到成功', color: 'success', hint: null }
+        : acc.last_checked_in === false
+          ? { text: '今日已签', color: 'primary', hint: null }
+          : // null is nobody's word: rendering it as 今日已签 showed no evidence as evidence.
+            {
+              text: '已登录·未确认',
+              color: 'warning',
+              hint: '本次没能确认今天的签到是否落地：站点没给回执，余额也没动过。',
+            }
   return acc.enabled ? state : { ...state, text: `${state.text}·已停用`, color: 'default' }
 }
 
@@ -111,6 +117,25 @@ const runAt = (iso: string | null) =>
     : '—'
 
 const money = (quota: number | null) => (quota != null ? `$${quota.toFixed(2)}` : '—')
+
+/** A result from a previous local calendar day is history, not today's state.
+ *
+ * `last_run_at` is stored as an ISO UTC timestamp. Comparing Date parts here lets the
+ * browser's local timezone decide what "today" means, which is also how the timestamp
+ * is rendered in the table. A missing/invalid timestamp is deliberately not treated as
+ * today: a successful result without a current-day run must not hide a pending check-in.
+ */
+const ranToday = (iso: string | null): boolean => {
+  if (!iso) return false
+  const run = new Date(iso)
+  if (Number.isNaN(run.getTime())) return false
+  const now = new Date()
+  return (
+    run.getFullYear() === now.getFullYear() &&
+    run.getMonth() === now.getMonth() &&
+    run.getDate() === now.getDate()
+  )
+}
 
 export default function App() {
   const [accounts, setAccounts] = useState<Account[]>([])
