@@ -1,0 +1,97 @@
+name: Docker
+
+# 镜像只在推 v* tag 时发布到 GHCR（ghcr.io/<owner>/auto_checkin:<tag 去掉 v>）；
+# PR 与手动触发只构建 + 冒烟，不推。只出 amd64：部署机是 x86_64。
+# 部署端按 tag + digest 双锁，digest 带 build provenance，可用
+#   gh attestation verify oci://ghcr.io/<owner>/auto_checkin@<digest> -R <owner>/auto_checkin
+# 核对来源。
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths: [Dockerfile, .dockerignore, .github/workflows/docker.yml, requirements/**, frontend/package*.json]
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/auto_checkin
+  PUSH: ${{ startsWith(github.ref, 'refs/tags/v') }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        if: env.PUSH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # Dockerfile 默认走国内镜像源（给大陆构建机用），CI 在境外，切回官方源。
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: checkin-smoke
+          build-args: |
+            NPM_REGISTRY=https://registry.npmjs.org
+            DEBIAN_MIRROR=deb.debian.org
+            PIP_INDEX=https://pypi.org/simple
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 冒烟：起得来、healthy 路由 200、SPA 有页面、以 uid 10001 跑、镜像里没带账号库。
+      # PANEL_SCHEDULER=0：空库也不必跑调度。
+      - name: Smoke test the image
+        run: |
+          docker run -d --name smoke -e PANEL_SCHEDULER=0 -p 18000:8000 checkin-smoke
+          READY=0
+          for _ in $(seq 1 30); do
+            if curl -fs -o /dev/null http://127.0.0.1:18000/api/health; then READY=1; break; fi
+            sleep 1
+          done
+          test "$READY" = 1 || { docker logs smoke; exit 1; }
+          curl -fs http://127.0.0.1:18000/ | grep -qi '<div id="root"'
+          test "$(curl -fs http://127.0.0.1:18000/api/accounts)" = '[]'
+          test "$(docker exec smoke id -u)" = 10001
+          docker run --rm --entrypoint sh checkin-smoke -c 'test ! -e /app/data/panel.db'
+
+      - name: Image tag
+        if: env.PUSH == 'true'
+        id: tag
+        run: echo "tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Push
+        if: env.PUSH == 'true'
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
+          build-args: |
+            NPM_REGISTRY=https://registry.npmjs.org
+            DEBIAN_MIRROR=deb.debian.org
+            PIP_INDEX=https://pypi.org/simple
+          cache-from: type=gha
+
+      - name: Attest build provenance
+        if: env.PUSH == 'true'
+        uses: actions/attest-build-provenance@v3
+        with:
+          push-to-registry: true
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}

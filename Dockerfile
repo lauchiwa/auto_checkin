@@ -20,7 +20,9 @@ COPY frontend/package.json frontend/package-lock.json ./
 # difference. The real fix is a frontend decision -- tailwind v4, or a @heroui/theme that
 # accepts v3 -- and does not belong to packaging.
 # 本机部署: 走国内镜像，构建机在大陆直连 registry.npmjs.org 慢且不稳。
-RUN npm ci --legacy-peer-deps --registry=https://registry.npmmirror.com
+# 境外构建（如 CI）传 --build-arg NPM_REGISTRY=https://registry.npmjs.org 走官方源。
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+RUN npm ci --legacy-peer-deps --registry=${NPM_REGISTRY}
 
 COPY frontend/ ./
 # `npm run build` is plain `vite build` -- no tsc, so a type error does not fail the image.
@@ -49,15 +51,19 @@ FROM python:3.14-slim
 # login matches DOM text, not pixels (panel/browser_login.py saves no screenshots). Add
 # fonts-noto-cjk only if you start capturing them, and expect ~100MB.
 # 本机部署: Debian/pip 均切到腾讯镜像（trixie 的 deb822 源文件也要改）。
-# 本机部署: Debian/pip 均切到腾讯镜像（trixie 的 deb822 源文件也要改）。
+#   境外构建（如 CI）传 --build-arg DEBIAN_MIRROR=deb.debian.org
+#   --build-arg PIP_INDEX=https://pypi.org/simple 走官方源（DEBIAN_MIRROR 等于
+#   deb.debian.org 时 sed 是空操作）。
 # 本机部署: 额外装 Xvfb（playwright install-deps 通常已带，这里显式声明）+ x11vnc/novnc
 #   做「有头浏览器 + 网页 VNC」——面板的「浏览器登录」要人工点授权按钮，无显示器
 #   的容器里必须有虚拟显示 + 看得到的画面。x11vnc/novnc 是可见性所必需，不装就会
 #   复现 TargetClosedError: Missing X server or $DISPLAY。
-RUN sed -i 's@deb.debian.org@mirrors.tencent.com@g' /etc/apt/sources.list.d/debian.sources \
+ARG DEBIAN_MIRROR=mirrors.tencent.com
+ARG PIP_INDEX=https://mirrors.tencent.com/pypi/simple
+RUN sed -i "s@deb.debian.org@${DEBIAN_MIRROR}@g" /etc/apt/sources.list.d/debian.sources \
 	&& apt-get update \
 	&& apt-get install -y --no-install-recommends tzdata xvfb x11vnc novnc websockify \
-	&& pip install --no-cache-dir -i https://mirrors.tencent.com/pypi/simple playwright==1.62.0 \
+	&& pip install --no-cache-dir -i ${PIP_INDEX} playwright==1.62.0 \
 	&& playwright install-deps chromium \
 	&& pip uninstall -y -q playwright \
 	&& apt-get clean \
@@ -80,7 +86,7 @@ RUN sed -i 's/selectbox\.options\.add(optn);/selectbox.appendChild(optn);/' /usr
 # Into a directory of the same name, not flattened with `./`: browser.txt includes base.txt
 # with a bare `-r base.txt`, which pip resolves against the *including file's* directory.
 COPY requirements/base.txt requirements/browser.txt ./requirements/
-RUN pip install --no-cache-dir -i https://mirrors.tencent.com/pypi/simple -r requirements/browser.txt
+RUN pip install --no-cache-dir -i ${PIP_INDEX} -r requirements/browser.txt
 
 # Only what the panel imports. `panel/vendor/` rides along inside this one copy: the
 # cloakbrowser helpers and, beside them, the BSD-2 notice clause 2 asks a binary

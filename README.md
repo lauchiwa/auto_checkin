@@ -114,6 +114,14 @@ docker compose -f docker-compose.yml \
 容器内虚拟显示器（noVNC）。每条都写了「为什么」，也标了哪些是本机特有的、
 你那边可以简化。
 
+### 预构建镜像（GHCR）
+
+推 `v*` tag 时 CI（`.github/workflows/docker.yml`）构建 amd64 镜像并发布到
+`ghcr.io/lauchiwa/auto_checkin:<tag 去掉 v>`，带 build provenance，可用
+`gh attestation verify oci://ghcr.io/lauchiwa/auto_checkin@<digest> -R lauchiwa/auto_checkin` 核对来源。
+CI 在境外，构建时用 `NPM_REGISTRY` / `DEBIAN_MIRROR` / `PIP_INDEX` 三个 build arg 切回官方源；
+本地 `docker compose build` 不传，仍走国内镜像。镜像里不含账号库（`.dockerignore` 是白名单）。
+
 ### 配置项
 
 见 `docker-compose.yml` 的注释，每一条都写了「为什么这么设」。关键几项：
