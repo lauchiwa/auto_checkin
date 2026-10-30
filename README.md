@@ -128,6 +128,7 @@ CI 在境外，构建时用 `NPM_REGISTRY` / `DEBIAN_MIRROR` / `PIP_INDEX` 三�
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
+| `PANEL_ALLOWED_HOSTS` | 空 | 面板接受的访问地址，逗号分隔，`*.example.com` 匹配子域名。回环地址始终允许；用局域网 IP、Tailscale 名或反代域名访问时必须写进来，否则返回 400 |
 | `PANEL_SCHEDULER` | `1` | 每日自动签到；`0` 只保留手动触发 |
 | `CHECKIN_HTTP_PROXY` / `CHECKIN_PROXY_URL` | 空 | HTTP / 浏览器请求的出口代理，直连得通就不用设 |
 | `CHECKIN_BROWSER_PROXY` | 空 | `1` 时浏览器上下文整体走代理 |

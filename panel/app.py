@@ -8,15 +8,17 @@ the trust boundary, and it is not always loopback: `run.py` defaults to `0.0.0.0
 an untrusted network publishes the credentials with it.
 """
 import asyncio
+import os
 import re
 import sqlite3
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -78,6 +80,50 @@ WINDOW = re.compile(r'([01]?\d|2[0-3]):[0-5]\d')
 # backend never has to learn a colour name to accept one.
 AVATAR_SLUG = re.compile(r'[a-z]{2,16}')
 DUPLICATE = '这个网站下已经有同名账号了；换个名称（名称也决定浏览器 profile，重名会共用同一个身份）'
+
+# Which names the panel answers to. Binding loopback does not stop a web page: DNS rebinding
+# points the page's own hostname at 127.0.0.1, and the browser then treats the panel as that
+# page's origin — free to read `/api/accounts`, which is every credential in the clear
+# (ADR-0003). Refusing any Host the owner did not name is what closes it. Loopback is always
+# allowed; a LAN IP, a Tailscale name or a reverse-proxy domain has to be listed in
+# PANEL_ALLOWED_HOSTS, comma-separated, `*.example.com` for subdomains, `*` to switch it off.
+LOOPBACK_HOSTS = ('localhost', '127.0.0.1', '::1')
+# A cross-site form can POST without a preflight, so a route that takes no body — bootstrap
+# resets the site password — is reachable from any page. A browser always sends Origin on a
+# cross-origin write; requiring it to be one of ours turns those away. No Origin at all is
+# curl or a script, which could call the API directly anyway.
+SAFE_METHODS = frozenset({'GET', 'HEAD', 'OPTIONS'})
+WRONG_HOST = (
+	'这个地址不在面板的允许名单里。用局域网 IP、Tailscale 名或反代域名访问时，'
+	'把它加进环境变量 PANEL_ALLOWED_HOSTS（逗号分隔）再重启面板。'
+)
+WRONG_ORIGIN = '跨站请求被拒绝：只接受面板自己页面发起的修改操作'
+
+
+def allowed_hosts() -> tuple[str, ...]:
+	extra = (os.getenv('PANEL_ALLOWED_HOSTS') or '').split(',')
+	return LOOPBACK_HOSTS + tuple(h.strip().lower() for h in extra if h.strip())
+
+
+def _hostname(url: str) -> Optional[str]:
+	"""'example.com:8443', '[::1]:8000' or 'https://example.com' -> the bare, lower-cased
+	name. Host headers and Origin values both go through here, so they compare in one shape;
+	anything unparseable (a broken IPv6 literal raises) is None, which is refused."""
+	try:
+		return urlsplit(url if '//' in url else f'//{url}').hostname
+	except ValueError:
+		return None
+
+
+def _host_ok(name: Optional[str], allowed: tuple[str, ...]) -> bool:
+	if not name:
+		return False
+	for pattern in allowed:
+		if pattern == '*' or pattern == name:
+			return True
+		if pattern.startswith('*.') and name.endswith(pattern[1:]):
+			return True
+	return False
 
 
 def _check(payload: AccountIn) -> dict:
@@ -155,6 +201,21 @@ def create_app(
 			task.cancel()
 
 	app = FastAPI(title='Check-in Panel', lifespan=lifespan)
+	hosts = allowed_hosts()
+
+	@app.middleware('http')
+	async def same_origin_only(request: Request, call_next):
+		if not _host_ok(_hostname(request.headers.get('host', '')), hosts):
+			return PlainTextResponse(WRONG_HOST, status_code=400)
+		origin = request.headers.get('origin')
+		if request.method not in SAFE_METHODS and origin is not None:
+			# Matched against the list rather than against Host: a reverse proxy may rewrite
+			# Host to 127.0.0.1, and Origin still names the public domain the page came from.
+			# 'null' (a sandboxed frame, a file:// page) reads as the name `null`, which no
+			# list holds, so it is refused too.
+			if not _host_ok(_hostname(origin), hosts):
+				return JSONResponse({'detail': WRONG_ORIGIN}, status_code=403)
+		return await call_next(request)
 
 	def _require(account_id: int):
 		account = store.get(account_id)

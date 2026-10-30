@@ -29,6 +29,12 @@ services:
       - "127.0.0.1:18001:6080"
 
     environment:
+      # ── 反代域名 ──
+      # 面板只认回环地址和这里列出的名字（防 DNS rebinding / 跨站请求）。经反代访问时
+      # 必须写上反代的公网域名：nginx 若 `proxy_set_header Host $host`，不写则所有请求 400；
+      # 若不转发 Host，读页面正常，但浏览器带的 Origin 是这个域名，不写则所有修改操作 403。
+      PANEL_ALLOWED_HOSTS: <你的域名>
+
       # ── 出口代理 ──
       # 填宿主上代理的地址（下面按「宿主跑 Clash/mihomo，mixed 端口 7890」举例）。
       # 容器内的 127.0.0.1 是容器自己，所以要用宿主的 Docker 网桥地址：

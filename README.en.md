@@ -396,6 +396,7 @@ All optional.
 |---|---|---|
 | `PANEL_HOST` | `run.py`: `0.0.0.0` / desktop: `127.0.0.1` | bind address. **This is the trust boundary** |
 | `PANEL_PORT` | `8000` | port |
+| `PANEL_ALLOWED_HOSTS` | empty | Extra names the panel answers to, comma-separated, `*.example.com` for subdomains. Loopback is always allowed; a LAN IP, a Tailscale name or a reverse-proxy domain must be listed or the request gets a 400 |
 | `PANEL_SCHEDULER` | on | `0` turns off the daily automatic check-in |
 | `PANEL_PROMO` | on | `0` turns off the promo card; nothing is fetched |
 | `CHECKIN_PROXY_URL` | `http://127.0.0.1:7897` | browser login only. Inside a container, a proxy on the host is `http://host.docker.internal:7897` |

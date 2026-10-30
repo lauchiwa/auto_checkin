@@ -12,6 +12,9 @@ Env vars (read at startup):
   PANEL_HOST        — bind address (default 0.0.0.0, LAN-reachable; 127.0.0.1 = local-only).
                       There is no auth layer and /api/accounts returns credentials in the
                       clear (ADR-0003), so this is the trust boundary.
+  PANEL_ALLOWED_HOSTS — extra names the panel answers to, comma-separated (loopback is
+                      always allowed). Reaching it by LAN IP, a Tailscale name or a reverse-proxy
+                      domain needs that name here, or the request is refused (panel/app.py).
   PANEL_SCHEDULER   — "0" to disable the daily auto check-in loop
   CHECKIN_PROXY_URL — proxy for the browser login (default http://127.0.0.1:7897)
 

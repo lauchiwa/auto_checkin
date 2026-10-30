@@ -35,6 +35,11 @@ set PANEL_HOST=127.0.0.1
 .venv\Scripts\python.exe run.py
 ```
 
+If you *are* reaching it from another machine, name the address you use in
+`PANEL_ALLOWED_HOSTS` (comma-separated; `*.ts.net` covers a Tailscale tailnet). The panel answers
+only to loopback and to the names listed there. Without this check, a web page could use DNS
+rebinding to point its own hostname at your machine and read `/api/accounts`, binding or not.
+
 ## 2. The desktop app
 
 ```bat
@@ -121,6 +126,11 @@ panel.example.com {
 	reverse_proxy 127.0.0.1:8000
 }
 ```
+
+Caddy passes the browser's `Host` through, so the panel also needs
+`PANEL_ALLOWED_HOSTS=panel.example.com`. Without it every request is a 400. The same goes for nginx with
+`proxy_set_header Host $host`. Any write from a page whose `Origin` is not on that list is refused
+with a 403, which is the CSRF protection for routes like bootstrap that take no body.
 
 And whatever you build, keep in mind what it is guarding: not a UI, but the only copy of your
 accounts.

@@ -42,6 +42,11 @@ services:
       # 每日自动签到循环（窗口到了自动签，失败退避重试）。设 "0" 只保留手动。
       PANEL_SCHEDULER: "1"
 
+      # 面板只接受回环地址（127.0.0.1 / localhost）和这里列出的名字，其他 Host 一律 400
+      # —— 防恶意网页用 DNS rebinding 读走凭据。经 Tailscale / 反代域名访问时写上那个名字，
+      # 逗号分隔，`*.ts.net` 匹配子域名。
+      PANEL_ALLOWED_HOSTS: ${PANEL_ALLOWED_HOSTS:-}
+
       # 推荐卡片：会去拉 raw.githubusercontent.com。国内不通的话设 "0"。
       PANEL_PROMO: ${PANEL_PROMO:-1}
 

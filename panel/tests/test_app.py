@@ -14,6 +14,13 @@ from panel.service import CredentialCheck
 from panel.store import AccountStore
 
 
+@pytest.fixture(autouse=True)
+def _testclient_host(monkeypatch):
+	"""TestClient sends `Host: testserver`, which the panel refuses like any other name the
+	owner did not list. Allowing it here keeps every test below about its own route."""
+	monkeypatch.setenv('PANEL_ALLOWED_HOSTS', 'testserver')
+
+
 @pytest.fixture
 def store():
 	with tempfile.TemporaryDirectory() as tmpdir:
@@ -563,3 +570,114 @@ def test_injecting_into_a_password_account_never_reaches_the_browser(store):
 
 def test_injecting_into_a_missing_account_is_404(client):
 	assert client.post('/api/accounts/999/idp-cookies', json={'cookies': IDP_JAR}).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Host / Origin: the panel has no login, so who may talk to it is decided here
+# ---------------------------------------------------------------------------
+
+
+def test_a_rebound_hostname_cannot_read_the_credentials(client, store):
+	"""DNS rebinding: a page whose name now resolves to 127.0.0.1 arrives with its own Host."""
+	store.create(name='A', base_url='https://x.test', username='alice', password='hunter2')
+
+	response = client.get('/api/accounts', headers={'Host': 'evil.example'})
+
+	assert response.status_code == 400
+	assert 'hunter2' not in response.text
+	assert 'PANEL_ALLOWED_HOSTS' in response.text
+
+
+@pytest.mark.parametrize('host', ['127.0.0.1:8000', 'localhost:5173', '[::1]:8000', 'LOCALHOST'])
+def test_loopback_is_always_allowed(client, host):
+	assert client.get('/api/health', headers={'Host': host}).status_code == 200
+
+
+def test_listed_hosts_and_subdomain_patterns_are_allowed(monkeypatch, store, service):
+	monkeypatch.setenv('PANEL_ALLOWED_HOSTS', ' panel.example.com , *.ts.net ')
+	client = TestClient(create_app(store=store, service=service))
+
+	assert client.get('/api/health', headers={'Host': 'panel.example.com'}).status_code == 200
+	assert client.get('/api/health', headers={'Host': 'box.tail1.ts.net'}).status_code == 200
+	assert client.get('/api/health', headers={'Host': 'example.com'}).status_code == 400
+	# `*.ts.net` is a suffix on a dot boundary, not a substring.
+	assert client.get('/api/health', headers={'Host': 'evilts.net'}).status_code == 400
+
+
+def test_a_malformed_host_is_refused_rather_than_a_500(client):
+	assert client.get('/api/health', headers={'Host': '[zz'}).status_code == 400
+
+
+def test_a_star_switches_the_host_check_off(monkeypatch, store, service):
+	monkeypatch.setenv('PANEL_ALLOWED_HOSTS', '*')
+	client = TestClient(create_app(store=store, service=service))
+
+	assert client.get('/api/health', headers={'Host': 'anything.example'}).status_code == 200
+
+
+def test_a_cross_site_post_without_a_body_is_refused(client, service, store):
+	"""bootstrap takes no body, so a plain HTML form on any page could fire it."""
+	account = store.create(name='A', base_url='https://x.test', session='s')
+
+	response = client.post(
+		f'/api/accounts/{account.id}/bootstrap',
+		headers={'Origin': 'https://evil.example', 'Content-Type': 'application/x-www-form-urlencoded'},
+	)
+
+	assert response.status_code == 403
+	assert response.json()['detail']
+	service.bootstrap.assert_not_called()
+
+
+@pytest.mark.parametrize('origin', ['null', 'https://evil.example', 'http://127.0.0.1.evil.example'])
+def test_a_foreign_origin_cannot_check_in_or_delete(client, service, store, origin):
+	account = store.create(name='A', base_url='https://x.test')
+
+	assert client.post(f'/api/accounts/{account.id}/check-in', headers={'Origin': origin}).status_code == 403
+	assert client.delete(f'/api/accounts/{account.id}', headers={'Origin': origin}).status_code == 403
+	service.check_in.assert_not_called()
+	assert store.get(account.id) is not None
+
+
+def test_the_panel_s_own_page_may_write(client, store):
+	"""What the SPA sends: Origin is the address the panel is open at, port and all."""
+	account = store.create(name='A', base_url='https://x.test')
+
+	response = client.post(
+		f'/api/accounts/{account.id}/check-in',
+		headers={'Host': '127.0.0.1:8000', 'Origin': 'http://127.0.0.1:8000'},
+	)
+
+	assert response.status_code == 200
+
+
+def test_behind_a_proxy_that_rewrites_host_the_origin_is_still_checked_against_the_list(
+	monkeypatch, store, service
+):
+	"""nginx may hand the panel `Host: 127.0.0.1`; the browser's Origin still names the domain."""
+	monkeypatch.setenv('PANEL_ALLOWED_HOSTS', 'panel.example.com')
+	client = TestClient(create_app(store=store, service=service))
+	account = store.create(name='A', base_url='https://x.test')
+	url = f'/api/accounts/{account.id}/check-in'
+
+	ok = client.post(url, headers={'Host': '127.0.0.1', 'Origin': 'https://panel.example.com'})
+	refused = client.post(url, headers={'Host': '127.0.0.1', 'Origin': 'https://evil.example'})
+
+	assert ok.status_code == 200
+	assert refused.status_code == 403
+
+
+def test_a_write_with_no_origin_is_not_a_browser_and_passes(client, store):
+	"""curl and scripts send no Origin; they could reach the API directly anyway, so refusing
+	them would protect nothing and break every one of them."""
+	account = store.create(name='A', base_url='https://x.test')
+
+	assert client.post(f'/api/accounts/{account.id}/check-in').status_code == 200
+
+
+def test_reads_do_not_need_an_origin_check(client):
+	"""A cross-origin GET cannot read the answer without CORS, and the panel grants none."""
+	response = client.get('/api/accounts', headers={'Origin': 'https://evil.example'})
+
+	assert response.status_code == 200
+	assert 'access-control-allow-origin' not in response.headers
